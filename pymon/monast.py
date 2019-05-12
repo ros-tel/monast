@@ -648,6 +648,7 @@ class Monast:
 			'AlarmClear'          : self.handlerEventAlarmClear,
 			'DNDState'            : self.handlerEventDNDState,
 			'PeerEntry'           : self.handlerEventPeerEntry,
+			'EndpointList'        : self.handlerEventEndpointList,
 			'PeerStatus'          : self.handlerEventPeerStatus,
 			'Newchannel'          : self.handlerEventNewchannel,
 			'DAHDIChannel'        : self.handlerEventDAHDIChannel,
@@ -1459,6 +1460,7 @@ class Monast:
 			self.servers[servername].status.bridges      = {}
 			self.servers[servername].status.peers        = {
 				'SIP': {},
+				'PJSIP': {},
 				'IAX2': {},
 				'DAHDI': {},
 				'Khomp': {},
@@ -1687,7 +1689,13 @@ class Monast:
 			server.pushTask(server.ami.sendDeferred, {'action': 'iaxpeers'}) \
 				.addCallback(server.ami.errorUnlessResponse) \
 				.addErrback(self._onAmiCommandFailure, servername, "Error Requesting IAX Peers")
-		
+
+		## PJSIP
+		log.debug("Server %s :: Requesting PJSIP Endpoints..." % servername)
+		server.pushTask(server.ami.sendDeferred, {'action': 'pjsipshowendpoints'}) \
+			.addCallback(server.ami.errorUnlessResponse) \
+			.addErrback(self._onAmiCommandFailure, servername, "Error Requesting PJSIP Endpoints")
+
 		# DAHDI
 		def onDahdiShowChannels(events):
 			log.debug("Server %s :: Processing DAHDI Channels..." % servername)
@@ -2366,6 +2374,83 @@ class Monast:
 				.addCallbacks(onShowPeer, self._onAmiCommandFailure, \
 					errbackArgs = (ami.servername, "Error Executting Command '%s'" % command))
 				
+	def handlerEventEndpointList(self, ami, event):
+		log.debug("Server %s :: Processing Event EndpointList..." % ami.servername)
+		server      = self.servers.get(ami.servername)
+		status      = event.get('devicestate')
+		channeltype = 'PJSIP'
+		objectname  = event.get('objectname').split('/')[0]
+		time        = -1
+
+		reTime = re.compile("([0-9]+)\s+ms")
+		gTime  = reTime.search(status)
+		if gTime:
+			time = int(gTime.group(1))
+
+		if status.startswith('OK'):
+			status = 'Registered'
+		elif status.find('(') != -1:
+			status = status[0:status.find('(')]
+
+		user = '%s/%s' % (channeltype, objectname)
+
+		if (self.displayUsersDefault and not server.displayUsers.has_key(user)) or (not self.displayUsersDefault and server.displayUsers.has_key(user)):
+			self._createPeer(
+				ami.servername,
+				channeltype = channeltype,
+				peername    = objectname,
+				status      = status,
+				time        = time
+			)
+		else:
+			user = None
+
+		if user:
+			type    = ['endpoint']
+			command = '%s show %s %s' % (channeltype.lower(), type, objectname)
+
+			def onShowPeer(response):
+				log.debug("Server %s :: Processing %s..." % (ami.servername, command))
+				result    = '\n'.join(response)
+				callerid  = None
+				context   = None
+				variables = []
+
+				try:
+					callerid = re.compile("['\"]").sub("", re.search('callerid[\s]+:[\s](.*)\n', result).group(1))
+					if callerid == ' <>':
+						callerid = '--'
+				except:
+					callerid = '--'
+
+				try:
+					context = re.search('context[\s]+:[\s](.*)\n', result).group(1)
+				except:
+					context = server.default_context
+
+				start = False
+				for line in response:
+					if re.search('set_var[\s+]', line):
+						start = True
+						continue
+					if start:
+						gVar = re.search('^[\s]+([^=]*)=(.*)', line)
+						if gVar:
+							variables.append("%s=%s" % (gVar.group(1).strip(), gVar.group(2).strip()))
+
+				self._updatePeer(
+					ami.servername,
+					channeltype = channeltype,
+					peername    = objectname,
+					callerid    = [callerid, objectname][callerid == "--"],
+					context     = context,
+					variables   = variables
+				)
+
+			server.pushTask(server.ami.command, command) \
+				.addCallbacks(onShowPeer, self._onAmiCommandFailure, \
+					errbackArgs = (ami.servername, "Error Executting Command '%s'" % command))
+
 	def handlerEventPeerStatus(self, ami, event):
 		log.debug("Server %s :: Processing Event PeerStatus..." % ami.servername)
 		channel = event.get('peer')
