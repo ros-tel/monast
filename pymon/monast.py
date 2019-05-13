@@ -2378,19 +2378,13 @@ class Monast:
 		log.debug("Server %s :: Processing Event EndpointList..." % ami.servername)
 		server      = self.servers.get(ami.servername)
 		status      = event.get('devicestate')
+		contacts      = event.get('contacts')
 		channeltype = 'PJSIP'
 		objectname  = event.get('objectname').split('/')[0]
 		time        = -1
 
-		reTime = re.compile("([0-9]+)\s+ms")
-		gTime  = reTime.search(status)
-		if gTime:
-			time = int(gTime.group(1))
-
-		if status.startswith('OK'):
-			status = 'Registered'
-		elif status.find('(') != -1:
-			status = status[0:status.find('(')]
+		if status != 'Unavailable' and contacts != '':
+			status = 'Reachable'
 
 		user = '%s/%s' % (channeltype, objectname)
 
@@ -2418,7 +2412,7 @@ class Monast:
 
 				try:
 					callerid = re.compile("['\"]").sub("", re.search('callerid[\s]+:[\s](.*)\n', result).group(1))
-					if callerid == ' <>':
+					if callerid == '<unknown>':
 						callerid = '--'
 				except:
 					callerid = '--'
@@ -2427,16 +2421,6 @@ class Monast:
 					context = re.search('context[\s]+:[\s](.*)\n', result).group(1)
 				except:
 					context = server.default_context
-
-				start = False
-				for line in response:
-					if re.search('set_var[\s+]', line):
-						start = True
-						continue
-					if start:
-						gVar = re.search('^[\s]+([^=]*)=(.*)', line)
-						if gVar:
-							variables.append("%s=%s" % (gVar.group(1).strip(), gVar.group(2).strip()))
 
 				self._updatePeer(
 					ami.servername,
